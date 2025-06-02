@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Knowledge Graph</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* Hide scrollbars */
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Dark background */
+            color: #e2e8f0; /* Light text */
+        }
+        #info-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            max-width: 300px;
+            font-size: 0.9em;
+            z-index: 10;
+            border: 1px solid #4a5568;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: none; /* Hidden by default */
+        }
+        #info-panel h3 {
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #63b3ed; /* Blue for headings */
+        }
+        #info-panel p {
+            margin-bottom: 5px;
+        }
+        #info-panel button {
+            background-color: #4a5568;
+            color: #e2e8f0;
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: none;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 0.85em;
+            transition: background-color 0.2s;
+        }
+        #info-panel button:hover {
+            background-color: #63b3ed;
+        }
+        #info-panel button:disabled {
+            background-color: #2d3748;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        #node-description, #suggested-connections {
+            margin-top: 10px;
+            padding: 8px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 5px;
+            border: 1px solid #2d3748;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .loading-indicator {
+            font-style: italic;
+            color: #a0aec0;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="info-panel">
+        <h3 id="node-name"></h3>
+        <p><strong>Category:</strong> <span id="node-category"></span></p>
+        <p><strong>Level:</strong> <span id="node-level"></span></p>
+        <button id="generate-description-btn">✨ Generate Description</button>
+        <div id="node-description" class="hidden"></div>
+        <button id="suggest-connections-btn">✨ Suggest Cross-Category Connection</button>
+        <div id="suggested-connections" class="hidden"></div>
+    </div>
+
+    <script type="module">
+        // Import Three.js and OrbitControls using the importmap
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Core Three.js Setup ---
+        let scene, camera, renderer, controls;
+        let raycaster, mouse;
+        let nodes = [];
+        let edges = [];
+        let highlightedNode = null;
+        let backgroundNetworkGroup; // Group to hold background nodes and lines
+        const NODE_RADIUS = 0.5;
+        // Updated CATEGORY_COLORS for a more "galaxy" feel
+        const CATEGORY_COLORS = {
+            'travel': 0x00FFFF, // Cyan
+            'software': 0xFF00FF, // Magenta
+            'design': 0xFFFF00, // Yellow
+            'research': 0x00FF00, // Green
+            'personal': 0xFF69B4, // Hot Pink
+            'utilities': 0xFFA500, // Orange
+            'local': 0x00BFFF, // Deep Sky Blue
+            'misc': 0xCCCCCC, // Light Gray
+            'default': 0xCCCCCC
+        };
+
+        const infoPanel = document.getElementById('info-panel');
+        const nodeNameSpan = document.getElementById('node-name');
+        const nodeCategorySpan = document.getElementById('node-category');
+        const nodeLevelSpan = document.getElementById('node-level');
+        const generateDescriptionBtn = document.getElementById('generate-description-btn');
+        const nodeDescriptionDiv = document.getElementById('node-description');
+        const suggestConnectionsBtn = document.getElementById('suggest-connections-btn');
+        const suggestedConnectionsDiv = document.getElementById('suggested-connections');
+
+        // Function to initialize the 3D scene
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            // Darker background for a deeper space feel
+            scene.background = new THREE.Color(0x000033); // Dark blue background
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 50; // Initial camera position
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // OrbitControls for interactive camera movement
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Smooth camera movement
+            controls.dampingFactor = 0.07; // Increased damping for smoother feel
+            controls.screenSpacePanning = false;
+            controls.minDistance = 5;
+            controls.maxDistance = 200;
+            controls.autoRotate = true; // Enable auto-rotation
+            controls.autoRotateSpeed = 0.5; // Set auto-rotation speed
+            controls.zoomSpeed = 0.8; // Slightly reduced zoom speed for smoother zoom
+            controls.panSpeed = 0.8; // Slightly reduced pan speed for smoother pan
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 1);
+            pointLight.position.set(100, 100, 100);
+            scene.add(pointLight);
+
+            // Raycaster for interaction
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('click', onClick, false);
+
+            // Add event listeners for LLM features
+            generateDescriptionBtn.addEventListener('click', () => {
+                if (highlightedNode) {
+                    generateNodeDescription(highlightedNode.name);
+                }
+            });
+            suggestConnectionsBtn.addEventListener('click', () => {
+                if (highlightedNode) {
+                    suggestCrossCategoryConnections(highlightedNode.name, highlightedNode.category);
+                }
+            });
+
+            // Populate the graph
+            createKnowledgeGraph();
+            createNetworkBackground(); // Add the new network background
+        }
+
+        // Create the network background
+        function createNetworkBackground() {
+            backgroundNetworkGroup = new THREE.Group();
+            const numBackgroundNodes = 25000; // Even more nodes for a super dense network
+            const backgroundNodeRadiusMin = 0.01; // Smaller min size
+            const backgroundNodeRadiusMax = 0.25; // Slightly larger max size for more variety
+            const backgroundFieldSize = 1500; // Even larger field for background
+            const backgroundNodes = [];
+
+            const backgroundNodeMaterial = new THREE.MeshBasicMaterial({
+                color: 0xFFFFFF, // Pure white for stars
+                transparent: true,
+                opacity: 0.2, // Increased opacity for better visibility
+                blending: THREE.AdditiveBlending // For glowing effect
+            });
+
+            for (let i = 0; i < numBackgroundNodes; i++) {
+                const x = (Math.random() - 0.5) * backgroundFieldSize;
+                const y = (Math.random() - 0.5) * backgroundFieldSize;
+                const z = (Math.random() - 0.5) * backgroundFieldSize;
+
+                const radius = backgroundNodeRadiusMin + Math.random() * (backgroundNodeRadiusMax - backgroundNodeRadiusMin);
+                const geometry = new THREE.SphereGeometry(radius, 8, 8);
+                const mesh = new THREE.Mesh(geometry, backgroundNodeMaterial);
+                mesh.position.set(x, y, z);
+                backgroundNetworkGroup.add(mesh);
+                backgroundNodes.push(mesh);
+            }
+
+            // Create background lines
+            const numBackgroundLines = 40000; // Even more connections
+            const maxConnectionDistance = 150; // Increased max distance for much longer connections
+
+            const backgroundLineMaterial = new THREE.LineBasicMaterial({
+                color: 0x88eeff, // Lighter cyan for a brighter glow
+                transparent: true,
+                opacity: 0.08, // Slightly increased opacity for lines
+                blending: THREE.AdditiveBlending
+            });
+
+            for (let i = 0; i < numBackgroundLines; i++) {
+                const node1 = backgroundNodes[Math.floor(Math.random() * backgroundNodes.length)];
+                const node2 = backgroundNodes[Math.floor(Math.random() * backgroundNodes.length)];
+
+                if (node1 !== node2 && node1.position.distanceTo(node2.position) < maxConnectionDistance) {
+                    const points = [];
+                    points.push(node1.position);
+                    points.push(node2.position);
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                    const line = new THREE.Line(geometry, backgroundLineMaterial);
+                    backgroundNetworkGroup.add(line);
+                }
+            }
+
+            scene.add(backgroundNetworkGroup);
+        }
+
+        // Handle window resize
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Handle mouse move for raycasting
+        function onMouseMove(event) {
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+
+        // Handle click event for node selection
+        function onClick() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(nodes.map(n => n.mesh));
+
+            if (intersects.length > 0) {
+                const clickedMesh = intersects[0].object;
+                const clickedNode = nodes.find(n => n.mesh === clickedMesh);
+
+                if (highlightedNode) {
+                    // Reset previous highlighted node's color
+                    highlightedNode.mesh.material.color.setHex(highlightedNode.originalColor);
+                    // Hide info panel and clear LLM results
+                    infoPanel.style.display = 'none';
+                    nodeDescriptionDiv.classList.add('hidden');
+                    nodeDescriptionDiv.innerHTML = '';
+                    suggestedConnectionsDiv.classList.add('hidden');
+                    suggestedConnectionsDiv.innerHTML = '';
+                }
+
+                if (clickedNode) {
+                    highlightedNode = clickedNode;
+                    highlightedNode.originalColor = clickedMesh.material.color.getHex();
+                    clickedMesh.material.color.setHex(0xffff00); // Highlight in yellow
+
+                    // Update info panel
+                    nodeNameSpan.textContent = clickedNode.name;
+                    nodeCategorySpan.textContent = clickedNode.category.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); // Capitalize first letter of each word
+                    nodeLevelSpan.textContent = clickedNode.level === 0 ? 'Main Category' : clickedNode.level === 1 ? 'Sub-Category' : 'Leaf Node';
+                    infoPanel.style.display = 'block'; // Show info panel
+                }
+            } else {
+                // Clicked outside any node, unhighlight
+                if (highlightedNode) {
+                    highlightedNode.mesh.material.color.setHex(highlightedNode.originalColor);
+                    highlightedNode = null;
+                    infoPanel.style.display = 'none'; // Hide info panel
+                    nodeDescriptionDiv.classList.add('hidden');
+                    nodeDescriptionDiv.innerHTML = '';
+                    suggestedConnectionsDiv.classList.add('hidden');
+                    suggestedConnectionsDiv.innerHTML = '';
+                }
+            }
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Only required if controls.enableDamping or controls.autoRotate are set to true
+
+            // Node pulsation
+            nodes.forEach(node => {
+                if (node.initialY === undefined) {
+                    node.initialY = node.mesh.position.y;
+                }
+                const pulsationSpeed = 0.001;
+                const pulsationAmplitude = 0.2;
+                node.mesh.position.y = node.initialY + Math.sin(Date.now() * pulsationSpeed + node.id.length) * pulsationAmplitude;
+                if (node.sprite) {
+                    // Ensure text labels are scaled appropriately and always visible
+                    node.sprite.scale.set(node.sprite.canvasWidth * 0.05 * camera.zoom, node.sprite.canvasHeight * 0.05 * camera.zoom, 1);
+                    node.sprite.position.y = node.mesh.position.y + NODE_RADIUS * 1.5;
+                }
+            });
+
+            // Rotate the background network slowly
+            if (backgroundNetworkGroup) {
+                backgroundNetworkGroup.rotation.y += 0.00005; // Slower rotation
+                backgroundNetworkGroup.rotation.x += 0.00002; // Even slower X rotation
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Gemini API Integration Functions ---
+
+        /**
+         * Generates a description for a given node using the Gemini API.
+         * @param {string} nodeName The name of the node to describe.
+         */
+        async function generateNodeDescription(nodeName) {
+            nodeDescriptionDiv.classList.remove('hidden');
+            nodeDescriptionDiv.innerHTML = '<span class="loading-indicator">Generating description...</span>';
+            generateDescriptionBtn.disabled = true;
+
+            try {
+                let chatHistory = [];
+                const prompt = `Provide a concise, 2-3 sentence explanation for the topic: "${nodeName}". Focus on its relevance or definition. Respond in English.`;
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = { contents: chatHistory };
+                const apiKey = ""; // Canvas will provide this at runtime
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    nodeDescriptionDiv.innerHTML = text;
+                } else {
+                    nodeDescriptionDiv.innerHTML = 'Could not generate description. Please try again.';
+                    console.error('Gemini API response structure unexpected:', result);
+                }
+            } catch (error) {
+                nodeDescriptionDiv.innerHTML = 'Error generating description. Check console for details.';
+                console.error('Error calling Gemini API for description:', error);
+            } finally {
+                generateDescriptionBtn.disabled = false;
+            }
+        }
+
+        /**
+         * Suggests a cross-category connection for a given node using the Gemini API.
+         * @param {string} nodeName The name of the node.
+         * @param {string} nodeCategory The category of the node.
+         */
+        async function suggestCrossCategoryConnections(nodeName, nodeCategory) {
+            suggestedConnectionsDiv.classList.remove('hidden');
+            suggestedConnectionsDiv.innerHTML = '<span class="loading-indicator">Suggesting connection...</span>';
+            suggestConnectionsBtn.disabled = true;
+
+            try {
+                let chatHistory = [];
+                const prompt = `Given the topic "${nodeName}" from the "${nodeCategory}" category, suggest one relevant topic from a *different* category that could be connected. Provide only the topic name, no explanation, and no introductory phrases like "The suggested topic is:".`;
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = { contents: chatHistory };
+                const apiKey = ""; // Canvas will provide this at runtime
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text.trim();
+                    suggestedConnectionsDiv.innerHTML = `Suggested connection: <strong>${text}</strong>`;
+                } else {
+                    suggestedConnectionsDiv.innerHTML = 'Could not suggest connection. Please try again.';
+                    console.error('Gemini API response structure unexpected:', result);
+                }
+            } catch (error) {
+                suggestedConnectionsDiv.innerHTML = 'Error suggesting connection. Check console for details.';
+                console.error('Error calling Gemini API for connection suggestion:', error);
+            } finally {
+                suggestConnectionsBtn.disabled = false;
+            }
+        }
+
+
+        // --- Knowledge Graph Data and Creation ---
+        function createKnowledgeGraph() {
+            const data = {
+                "1. Travel & Tourism": {
+                    "Destinations within Vietnam": {
+                        "Northern Vietnam": ["Hanoi", "Sapa", "Moc Chau", "Ha Long Bay", "Cao Bang (Ban Gioc waterfall, Pac Bo)", "Lang Son (Dong Tam Thanh, Nhi Thanh)", "Ninh Binh (Bai Dinh Pagoda)", "Son La (Muong Than field, Tien Son cave, Ban Hon)", "Thai Nguyen (Nui Coc Lake", "Thac Dau Dang)", "Dien Bien"],
+                        "Northwestern Vietnam": ["General interest"],
+                        "Central Highlands": ["Da Lat", "Tay Nguyen (general)", "Kon Tum (Y Ty)"],
+                        "Central Vietnam": ["Hoi An", "Nha Trang", "Cua Lo"],
+                        "Southern Vietnam": ["Ho Chi Minh City (Ben Nha Rong)", "Vung Tau", "Dong Nai (Buu Long Tourist Area", "Giang Dien Waterfall)"],
+                        "Islands": ["Co To Island", "Cat Ba Island", "Cai Chien Island", "Con Son"]
+                    },
+                    "Types of Tourism": ["Zen Tourism/Spiritual Tourism", "Cultural Tourism (e.g.", "Northwestern culture", "Tay Nguyen culture)", "Nature Tourism (mountains", "waterfalls", "beaches)", "Adventure Tourism (e.g.", "exploring caves)", "Eco-tourism", "Medical Tourism", "Food Tourism"],
+                    "Travel Activities & Interests": ["Tour planning and itineraries", "Local specialties and cuisine", "Accommodation (e.g.", "Glory Resort)", "Transportation (e.g.", "xe đạp Hạ Long)", "Photography related to travel", "Hiking", "Scuba Diving", "Street Food Exploration"],
+                    "Tourism Industry": ["Marketing for tourism", "Economic impact of tourism", "Sustainable Tourism", "Digital Marketing in Tourism"]
+                },
+                "2. Software, Technology & Development": {
+                    "Music Production": ["DAWs: GarageBand", "Cubase", "Ableton", "Reaper", "FL Studio"],
+                    "Video Editing & Visual Effects": ["Software: DaVinci Resolve", "Premiere Pro", "After Effects", "Resolume Arena", "TouchDesigner", "Techniques: LED screen mapping", "visual effects", "color grading (LUTs", "SLog)", "chasers"],
+                    "Office Software": ["Microsoft Office Suite: Word", "PowerPoint", "Excel (including specific features like mail merge", "random functions", "chart creation)", "Google Suite: Google Docs", "Google Sheets", "Google Forms", "Google Scholar", "EndNote (for research referencing)"],
+                    "Web Development & Design": ["Front-end: HTML", "CSS (including responsive design", "hiding/showing elements)", "JavaScript", "Platforms: WordPress (themes", "plugins", "website statistics)", "Design Tools: Canva", "Figma", "Adobe Illustrator (templates", "vector graphics)", "Backend Development (Node.js, Python/Django)", "Databases (SQL, NoSQL)"],
+                    "Discord": ["Bot development (Python", "slash commands)", "Server management (invite links", "member automation", "activity status)"],
+                    "Operating Systems & Utilities": ["Windows (activation", "font management)", "Virtual Private Servers (VPS) - usage and troubleshooting", "File sharing (Snapdrop)"],
+                    "Automation & Scripting": ["Discord bot automation", "Website traffic generation tools (Otohit", "Hitleap)"],
+                    "APIs": ["VietQR API", "Mi Fitness API", "Zoho Mail API"],
+                    "Trading Software": ["TradingView", "Exness", "Binance"],
+                    "Artificial Intelligence": ["Machine Learning", "Deep Learning", "Natural Language Processing (NLP)", "Computer Vision"],
+                    "Cloud Computing": ["AWS", "Google Cloud Platform (GCP)", "Azure", "Serverless Architectures"],
+                    "Mobile Development": ["iOS Development (Swift)", "Android Development (Kotlin)", "Cross-platform (React Native)"]
+                },
+                "3. Design & Creative Arts": {
+                    "Graphic Design": ["Minimalist design", "Vector graphics (flowers", "travel-related elements)", "Logo design", "Event design (backdrop", "banner", "staff card templates)", "Slide design (PowerPoint templates)", "Typography", "Branding", "Motion Graphics"],
+                    "Photography": ["Sony cameras (specific models)", "Bokeh effect", "World Photography Day"],
+                    "Fontography": ["Vietnamese fonts", "Installing and using fonts in various applications (Windows", "PowerPoint", "Canva", "CapCut)"],
+                    "Video Production": ["Film LUTs", "Video file formats (MP4", "SLog)"],
+                    "Interior Design": ["Vinhome Smart City interior design"],
+                    "3D Modeling & Animation": ["Blender", "Cinema 4D", "Character Rigging"],
+                    "UI/UX Design": ["Wireframing", "Prototyping", "User Research"]
+                },
+                "4. Research & Academia": {
+                    "Research Methodology": ["Literature review", "Research objects", "Scientific databases (Scopus", "Google Scholar)", "Citation styles (APA) and management tools (EndNote)", "Statistical analysis (SPSS", "SmartPLS)", "Qualitative Research (Grounded Theory)", "Quantitative Research", "Mixed Methods Research", "Ethical Considerations in Research"],
+                    "Specific Research Interests": ["Zen Tourism (development", "potential in Vietnam)", "Tourism economics", "Impact of technology on life", "Climate Change Impact", "Urban Planning", "Behavioral Economics"]
+                },
+                "5. Personal Interests & Hobbies": {
+                    // Removed "Gaming" and its sub-topics
+                    "Music": ["Ukulele (chords)", "Bossa Nova (music theory", "bass lines)", "Youtube Music", "Music Production Techniques", "Sound Engineering"],
+                    "Literature": ["Franz Kafka (works", "quotes)", "Vietnamese literature (short stories", "novels)"],
+                    "Photography": [], // Already a sub-category in Design, link here for cross-reference
+                    "Travel": [], // Already a sub-category in Travel, link here for cross-reference
+                    "Discord Bots": [], // Already a sub-category in Software, link here for cross-reference
+                    "Visual Skins and Customization": ["Rainmeter", "Lively Wallpaper"],
+                    "Fitness & Wellness": ["Yoga", "Meditation", "Nutrition"],
+                    "Cooking & Cuisine": ["Vietnamese Cuisine", "Baking", "International Dishes"]
+                },
+                "6. Utilities & Tools": [
+                    "Online Translators", "File Conversion Tools (MP4 to MP3", "Word to PDF)", "QR Code & Barcode Generators", "URL Shorteners", "Website Statistics Tools (Histats", "StatCounter)", "Email Services (Zoho Mail", "Gmail)",
+                    "Security Tools: VPN Services", "Password Managers", "Antivirus Software",
+                    "Communication Tools: Slack", "Zoom", "Microsoft Teams",
+                    "Productivity Tools: Task Management Apps", "Note-taking Apps"
+                ],
+                "7. Local Context (Hanoi)": [
+                    "Specific locations in Hanoi (Van Mieu Quoc Tu Giam", "Tay Son area)", "Interest in local history and legends (Truyen thuyet Ho Guom)",
+                    "Local Culture: Hanoi Old Quarter", "Water Puppet Theater", "Traditional Festivals",
+                    "Local Cuisine: Phở", "Bún Chả", "Cà Phê Trứng"
+                ],
+                "8. Random & Miscellaneous": [
+                    "Searching for song lyrics", "Sound effects", "Historical figures (Hoang Van Linh", "Le Duc Tho)", "Understanding specific concepts (marketing mix", "altruism)",
+                    "Philosophy: Existentialism", "Stoicism",
+                    "Current Events: Global Economy", "Technological Trends"
+                ]
+            };
+
+            let nodeIdCounter = 0;
+            const nodeMap = new Map(); // Map to store nodes by their ID for easy lookup
+
+            // Helper to create a unique ID
+            function createNodeId(name) {
+                return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') + '_' + (nodeIdCounter++);
+            }
+
+            // Function to create a text sprite
+            function createTextSprite(message, color = '#ffffff') {
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                const fontSize = 24;
+                context.font = `Bold ${fontSize}px Inter`;
+                const metrics = context.measureText(message);
+                const textWidth = metrics.width;
+                const textHeight = fontSize * 1.5; // Add some padding
+                canvas.width = textWidth + 10;
+                canvas.height = textHeight + 10;
+                context.font = `Bold ${fontSize}px Inter`;
+                context.fillStyle = color;
+                context.fillText(message, 5, fontSize + 5);
+
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.needsUpdate = true;
+
+                const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+                const sprite = new THREE.Sprite(spriteMaterial);
+                // Store canvas dimensions on the sprite for dynamic scaling
+                sprite.canvasWidth = canvas.width;
+                sprite.canvasHeight = canvas.height;
+                sprite.scale.set(sprite.canvasWidth * 0.05, sprite.canvasHeight * 0.05, 1); // Initial scale
+                return sprite;
+            }
+
+            // Parse data and create nodes
+            Object.keys(data).forEach((mainCategoryName, mainIndex) => {
+                const mainCategoryId = createNodeId(mainCategoryName);
+                const mainCategoryCleanName = mainCategoryName.split('. ')[1]; // Remove "1. " prefix
+                const mainCategory = mainCategoryCleanName.split(' ')[0].toLowerCase(); // e.g., 'travel'
+
+                // Position main categories in a large circle
+                const mainAngle = (mainIndex / Object.keys(data).length) * Math.PI * 2;
+                const mainRadius = 30;
+                const mainNode = {
+                    id: mainCategoryId,
+                    name: mainCategoryCleanName,
+                    category: mainCategory,
+                    level: 0,
+                    x: mainRadius * Math.cos(mainAngle),
+                    y: 0, // Keep main categories on a plane for now
+                    z: mainRadius * Math.sin(mainAngle)
+                };
+                nodes.push(mainNode);
+                nodeMap.set(mainNode.id, mainNode);
+
+                const subCategories = data[mainCategoryName];
+                if (Array.isArray(subCategories)) { // Case for Utilities, Local Context, Random
+                    subCategories.forEach((leafName, leafIndex) => {
+                        const leafId = createNodeId(leafName);
+                        const leafNode = {
+                            id: leafId,
+                            name: leafName,
+                            category: mainCategory,
+                            level: 1, // Treat as level 1 for these categories
+                            parent: mainNode.id,
+                            x: mainNode.x + (Math.random() - 0.5) * 10,
+                            y: mainNode.y + (Math.random() - 0.5) * 10,
+                            z: mainNode.z + (Math.random() - 0.5) * 10
+                        };
+                        nodes.push(leafNode);
+                        nodeMap.set(leafNode.id, leafNode);
+                        edges.push({ source: mainNode.id, target: leafNode.id, type: 'hierarchical' });
+                    });
+                } else {
+                    Object.keys(subCategories).forEach((subCategoryName, subIndex) => {
+                        const subCategoryId = createNodeId(subCategoryName);
+                        const subCategory = subCategoryName.split(' ')[0].toLowerCase(); // e.g., 'destinations'
+
+                        // Position sub-categories radiating from main category
+                        const subAngle = (subIndex / Object.keys(subCategories).length) * Math.PI * 2;
+                        const subRadius = 15;
+                        const subNode = {
+                            id: subCategoryId,
+                            name: subCategoryName,
+                            category: mainCategory,
+                            level: 1,
+                            parent: mainNode.id,
+                            x: mainNode.x + subRadius * Math.cos(subAngle) * Math.cos(mainAngle),
+                            y: mainNode.y + subRadius * Math.sin(subAngle),
+                            z: mainNode.z + subRadius * Math.cos(subAngle) * Math.sin(mainAngle)
+                        };
+                        nodes.push(subNode);
+                        nodeMap.set(subNode.id, subNode);
+                        edges.push({ source: mainNode.id, target: subNode.id, type: 'hierarchical' });
+
+                        const leafNodes = subCategories[subCategoryName];
+                        if (Array.isArray(leafNodes)) {
+                            leafNodes.forEach((leafName, leafIndex) => {
+                                if (leafName === "" || leafName.includes("general")) return; // Skip empty or general nodes
+
+                                const leafId = createNodeId(leafName);
+                                // Position leaf nodes radiating from sub-category
+                                const leafAngle = (leafIndex / leafNodes.length) * Math.PI * 2;
+                                const leafRadius = 8;
+                                const leafNode = {
+                                    id: leafId,
+                                    name: leafName,
+                                    category: mainCategory,
+                                    level: 2,
+                                    parent: subNode.id,
+                                    x: subNode.x + leafRadius * Math.cos(leafAngle) * Math.cos(subAngle),
+                                    y: subNode.y + leafRadius * Math.sin(leafAngle),
+                                    z: subNode.z + leafRadius * Math.cos(leafAngle) * Math.sin(subAngle)
+                                };
+                                nodes.push(leafNode);
+                                nodeMap.set(leafNode.id, leafNode);
+                                edges.push({ source: subNode.id, target: leafNode.id, type: 'hierarchical' });
+                            });
+                        }
+                    });
+                }
+            });
+
+            // Function to add a cross-category edge
+            function addCrossCategoryEdge(sourceNamePart, targetNamePart) {
+                const sourceNode = nodes.find(n => n.id.includes(sourceNamePart));
+                const targetNode = nodes.find(n => n.id.includes(targetNamePart));
+                if (sourceNode && targetNode && sourceNode.id !== targetNode.id && !edges.some(e => (e.source === sourceNode.id && e.target === targetNode.id) || (e.source === targetNode.id && e.target === sourceNode.id))) {
+                    edges.push({ source: sourceNode.id, target: targetNode.id, type: 'cross_category' });
+                }
+            }
+
+            // --- Add more specific cross-category relationships for a denser graph ---
+            // Travel & Tourism <-> Design & Creative Arts (Photography, Vector Graphics)
+            addCrossCategoryEdge('photography_related_to_travel', 'photography');
+            addCrossCategoryEdge('hoi_an', 'photography');
+            addCrossCategoryEdge('ha_long_bay', 'photography');
+            addCrossCategoryEdge('vector_graphics_flowers_travel_related_elements', 'travel_activities_interests');
+            addCrossCategoryEdge('eco_tourism', 'sustainable_tourism');
+            addCrossCategoryEdge('food_tourism', 'local_specialties_and_cuisine');
+            addCrossCategoryEdge('scuba_diving', 'nature_tourism_mountains_waterfalls_beaches');
+
+
+            // Software, Technology & Development <-> Personal Interests & Hobbies (Music)
+            addCrossCategoryEdge('youtube_music', 'music_production');
+            addCrossCategoryEdge('ableton', 'music'); // Example: Ableton for music creation
+            addCrossCategoryEdge('music_production_techniques', 'music');
+            addCrossCategoryEdge('sound_engineering', 'music_production');
+
+
+            // Software, Technology & Development <-> Research & Academia (Office, Data Analysis)
+            addCrossCategoryEdge('google_scholar', 'scientific_databases_scopus_google_scholar');
+            addCrossCategoryEdge('endnote_for_research_referencing', 'citation_styles_apa_and_management_tools_endnote');
+            addCrossCategoryEdge('spss_smartpls', 'statistical_analysis_spss_smartpls');
+            addCrossCategoryEdge('microsoft_office_suite_excel', 'statistical_analysis_spss_smartpls'); // Excel for data analysis
+            addCrossCategoryEdge('machine_learning', 'impact_of_technology_on_life');
+            addCrossCategoryEdge('deep_learning', 'artificial_intelligence');
+            addCrossCategoryEdge('natural_language_processing_nlp', 'artificial_intelligence');
+            addCrossCategoryEdge('computer_vision', 'artificial_intelligence');
+            addCrossCategoryEdge('aws', 'cloud_computing');
+            addCrossCategoryEdge('google_cloud_platform_gcp', 'cloud_computing');
+            addCrossCategoryEdge('azure', 'cloud_computing');
+            addCrossCategoryEdge('serverless_architectures', 'cloud_computing');
+            addCrossCategoryEdge('ios_development_swift', 'mobile_development');
+            addCrossCategoryEdge('android_development_kotlin', 'mobile_development');
+            addCrossCategoryEdge('cross_platform_react_native', 'mobile_development');
+            addCrossCategoryEdge('backend_development_node_js_python_django', 'web_development_design');
+            addCrossCategoryEdge('databases_sql_nosql', 'web_development_design');
+
+
+            // Research & Academia <-> Travel & Tourism
+            addCrossCategoryEdge('zen_tourism_development_potential_in_vietnam', 'zen_tourism_spiritual_tourism');
+            addCrossCategoryEdge('tourism_economics', 'economic_impact_of_tourism');
+            addCrossCategoryEdge('impact_of_technology_on_life', 'software_technology_development'); // Broad connection
+            addCrossCategoryEdge('climate_change_impact', 'sustainable_tourism');
+            addCrossCategoryEdge('urban_planning', 'destinations_within_vietnam');
+            addCrossCategoryEdge('behavioral_economics', 'marketing_for_tourism');
+
+            // Design & Creative Arts <-> Software, Technology & Development (Design Tools, Video Production)
+            addCrossCategoryEdge('canva', 'design_tools_canva');
+            addCrossCategoryEdge('figma', 'design_tools_figma');
+            addCrossCategoryEdge('adobe_illustrator', 'design_tools_adobe_illustrator_templates_vector_graphics');
+            addCrossCategoryEdge('powerpoint_templates', 'microsoft_office_suite_powerpoint');
+            addCrossCategoryEdge('installing_and_using_fonts_in_various_applications_windows_powerpoint_canva_capcut', 'windows_activation_font_management');
+            addCrossCategoryEdge('film_luts', 'color_grading_luts_slog');
+            addCrossCategoryEdge('davinci_resolve', 'video_production'); // DaVinci Resolve is video editing software
+            addCrossCategoryEdge('premiere_pro', 'video_production'); // Premiere Pro is video editing software
+            addCrossCategoryEdge('after_effects', 'video_editing_visual_effects'); // After Effects for VFX
+            addCrossCategoryEdge('typography', 'graphic_design');
+            addCrossCategoryEdge('branding', 'graphic_design');
+            addCrossCategoryEdge('motion_graphics', 'graphic_design');
+            addCrossCategoryEdge('blender', '3d_modeling_animation');
+            addCrossCategoryEdge('cinema_4d', '3d_modeling_animation');
+            addCrossCategoryEdge('character_rigging', '3d_modeling_animation');
+            addCrossCategoryEdge('wireframing', 'ui_ux_design');
+            addCrossCategoryEdge('prototyping', 'ui_ux_design');
+            addCrossCategoryEdge('user_research', 'ui_ux_design');
+
+
+            // Local Context (Hanoi) <-> Travel & Tourism
+            addCrossCategoryEdge('specific_locations_in_hanoi_van_mieu_quoc_tu_giam_tay_son_area', 'hanoi');
+            addCrossCategoryEdge('truyen_thuyet_ho_guom', 'hanoi');
+            addCrossCategoryEdge('hanoi', 'travel_tourism'); // General connection
+            addCrossCategoryEdge('hanoi_old_quarter', 'local_culture');
+            addCrossCategoryEdge('water_puppet_theater', 'local_culture');
+            addCrossCategoryEdge('traditional_festivals', 'local_culture');
+            addCrossCategoryEdge('phở', 'local_cuisine');
+            addCrossCategoryEdge('bún_chả', 'local_cuisine');
+            addCrossCategoryEdge('cà_phê_trứng', 'local_cuisine');
+
+
+            // Utilities & Tools <-> Software, Technology & Development
+            addCrossCategoryEdge('online_translators', 'web_development_design'); // Web-based tools
+            addCrossCategoryEdge('file_conversion_tools_mp4_to_mp3_word_to_pdf', 'operating_systems_utilities'); // OS utilities
+            addCrossCategoryEdge('qr_code_barcode_generators', 'apis'); // APIs for generation
+            addCrossCategoryEdge('website_statistics_tools_histats_statcounter', 'web_development_design'); // Web development tools
+            addCrossCategoryEdge('vpn_services', 'security_tools');
+            addCrossCategoryEdge('password_managers', 'security_tools');
+            addCrossCategoryEdge('antivirus_software', 'security_tools');
+            addCrossCategoryEdge('slack', 'communication_tools');
+            addCrossCategoryEdge('zoom', 'communication_tools');
+            addCrossCategoryEdge('microsoft_teams', 'communication_tools');
+            addCrossCategoryEdge('task_management_apps', 'productivity_tools');
+            addCrossCategoryEdge('note_taking_apps', 'productivity_tools');
+
+
+            // Personal Interests & Hobbies <-> Design & Creative Arts (Visual Customization)
+            addCrossCategoryEdge('rainmeter', 'visual_skins_and_customization');
+            addCrossCategoryEdge('lively_wallpaper', 'visual_skins_and_customization');
+            addCrossCategoryEdge('yoga', 'fitness_wellness');
+            addCrossCategoryEdge('meditation', 'fitness_wellness');
+            addCrossCategoryEdge('nutrition', 'fitness_wellness');
+            addCrossCategoryEdge('vietnamese_cuisine', 'cooking_cuisine');
+            addCrossCategoryEdge('baking', 'cooking_cuisine');
+            addCrossCategoryEdge('international_dishes', 'cooking_cuisine');
+
+            // Random & Miscellaneous <-> Research & Academia
+            addCrossCategoryEdge('existentialism', 'philosophy');
+            addCrossCategoryEdge('stoicism', 'philosophy');
+            addCrossCategoryEdge('global_economy', 'current_events');
+            addCrossCategoryEdge('technological_trends', 'current_events');
+            addCrossCategoryEdge('technological_trends', 'software_technology_development');
+
+
+            // Create 3D objects for nodes
+            nodes.forEach(node => {
+                const geometry = new THREE.SphereGeometry(NODE_RADIUS, 32, 32);
+                // Use updated CATEGORY_COLORS
+                const material = new THREE.MeshLambertMaterial({ color: CATEGORY_COLORS[node.category] || CATEGORY_COLORS['default'] });
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.position.set(node.x, node.y, node.z);
+                scene.add(mesh);
+                node.mesh = mesh; // Store reference to the mesh
+
+                // Add text label
+                const sprite = createTextSprite(node.name, '#e2e8f0'); // Light text color
+                sprite.position.set(node.x, node.y + NODE_RADIUS * 1.5, node.z); // Position above the sphere
+                scene.add(sprite);
+                node.sprite = sprite; // Store reference to the sprite
+            });
+
+            // Create 3D objects for edges
+            edges.forEach(edge => {
+                const material = new THREE.LineBasicMaterial({
+                    color: edge.type === 'hierarchical' ? 0xBBBBBB : 0x00FF00, // Brighter gray for hierarchical, green for cross-category
+                    linewidth: 1,
+                    transparent: true,
+                    opacity: 0.8 // Slightly more opaque
+                });
+                const sourceNode = nodeMap.get(edge.source);
+                const targetNode = nodeMap.get(edge.target);
+
+                if (sourceNode && targetNode) {
+                    const points = [];
+                    points.push(new THREE.Vector3(sourceNode.x, sourceNode.y, sourceNode.z));
+                    points.push(new THREE.Vector3(targetNode.x, targetNode.y, targetNode.z));
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                    const line = new THREE.Line(geometry, material);
+                    scene.add(line);
+                }
+            });
+        }
+
+        // Initialize and animate the scene
+        window.onload = function () {
+            init();
+            animate();
+        };
+    </script>
+</body>
+</html>
